@@ -8,8 +8,8 @@ The NetAuditor Suite provides specialized, memory-efficient scripts to analyze n
 
 Currently, the suite includes the following specialized auditors. **Click on each tool's name to read its specific documentation and usage guide.**
 
-| Status | Tool | Target Protocol | Key Capabilities |
-|  :--- | :--- | :--- |
+| Tool | Target Protocol | Key Capabilities |
+| :--- | :--- | :--- |
 | [**ICMPAuditor**](./ICMPAuditor) | ICMP | Payload asymmetry (RFC 792), Entropy analysis, C2 Beaconing, Covert channels. |
 | [**DNSAuditor**](./DNSAuditor) | DNS | DNS Tunneling, DGA (Domain Generation Algorithms), High-volume TXT/A queries. |
 | [**HTTPSAuditor**](./TLSAuditor) | HTTPS / TLS | Behavioral beaconing (Jitter/Delta time), SNI anomalies, TLS fingerprinting. |
