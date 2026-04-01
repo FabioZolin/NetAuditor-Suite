@@ -9,13 +9,10 @@ The NetAuditor Suite provides specialized, memory-efficient scripts to analyze n
 Currently, the suite includes the following specialized auditors. **Click on each tool's name to read its specific documentation and usage guide.**
 
 | Status | Tool | Target Protocol | Key Capabilities |
-| :---: | :--- | :--- | :--- |
-| 🟢 | [**ICMPAuditor**](./ICMPAuditor) | ICMP | Payload asymmetry (RFC 792), Entropy analysis, C2 Beaconing, Covert channels. |
-| 🟢 | [**DNSAuditor**](./DNSAuditor) | DNS | DNS Tunneling, DGA (Domain Generation Algorithms), High-volume TXT/A queries. |
-| 🟡 | **HTTPSAuditor** *(WIP)* | HTTPS / TLS | Behavioral beaconing (Jitter/Delta time), SNI anomalies, TLS fingerprinting. |
-| 🟡 | **SMBAuditor** *(WIP)* | SMB / RPC | Lateral movement detection, Admin share abuse, Data hoarding. |
-
-*(🟢 = Ready / 🟡 = Work in Progress)*
+|  :--- | :--- | :--- |
+| [**ICMPAuditor**](./ICMPAuditor) | ICMP | Payload asymmetry (RFC 792), Entropy analysis, C2 Beaconing, Covert channels. |
+| [**DNSAuditor**](./DNSAuditor) | DNS | DNS Tunneling, DGA (Domain Generation Algorithms), High-volume TXT/A queries. |
+| [**HTTPSAuditor**](./TLSAuditor) | HTTPS / TLS | Behavioral beaconing (Jitter/Delta time), SNI anomalies, TLS fingerprinting. |
 
 ## Global Installation
 
@@ -41,6 +38,6 @@ pip install -r requirements.txt
 
 As you can see from the tools status I am currently working on two more advanced projects, `HTTPSAuditor` to get into an up-to-date method of tunneling to and from outside networks. This project will allow me to get a further understanding of behavioural analysis and finding other aspects to monitor apart from the data itself.
 
-The other project is `SMBAuditor` which will be a detector for SMB lateral movement inside the network, instead of outside tunneling like the other projects.
+Currently thinking about a `SMBAuditor` which will be a detector for SMB lateral movement inside the network, instead of outside tunneling like the other projects.
 
 This project started as just the DNSAuditor to improve my scripting skills and get further into network analysis, let's see where it will end up!
