@@ -45,8 +45,6 @@ If the captured SNI ends with a whitelisted domain, the session is immediately d
 
 > bing.com
 
-> services.google.com
-
 > 192.168.1.254
 
 ## Anomaly Weighting

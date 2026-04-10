@@ -4,6 +4,11 @@ import os
 import math
 import logging
 from collections import defaultdict, Counter
+import functools
+import tldextract
+
+# Define the global extractor
+extractor = tldextract.TLDExtract()
 
 # --- SCAPY SETUP & LOGGING ---
 # Suppress Scapy runtime warnings (e.g., unknown GREASE cipher suites)
@@ -142,10 +147,29 @@ def set_whitelist(config):
     whitelist_set = set()
     if config.get('whitelist') and os.path.isfile(config['whitelist']):
         with open(config['whitelist'], 'r', encoding='utf-8') as f:
-            # Save everything in lowercase, ignore empty lines and strip whitespace
-            whitelist_set = {line.strip().lower() for line in f if line.strip()}
-        print(f"{C_INFO}[INFO]{C_RESET} {len(whitelist_set)} domains/IPs loaded from whitelist.")
+            for line in f:
+                raw_target = line.strip().lower()
+                
+                # Ignore empty lines and comments
+                if raw_target and not raw_target.startswith('#'):
+                    # Run the user input through the extractor to get the core name
+                    ext = extractor(raw_target)
+                    if ext.domain:
+                        whitelist_set.add(ext.domain)
+                        
+        print(f"{C_INFO}[INFO]{C_RESET} {len(whitelist_set)} core domains/IPs loaded from whitelist.")
     config['whitelist_set'] = whitelist_set
+
+@functools.lru_cache(maxsize=10000)
+def get_target_info(target):
+    """
+    Extracts the core organization name from a domain or IP.
+    Caches the result for high performance in streaming PCAPs.
+    """
+    if not target:
+        return ""
+    ext = extractor(target)
+    return ext.domain
 
 def process_client_hello(packet, stats, config):
     """
@@ -188,11 +212,12 @@ def process_client_hello(packet, stats, config):
 
         #SNI Whitelist check
         if whitelist:
-        # If SNI is present, we check it against the whitelist; if not, we fallback to the destination IP for matching
-            target_to_check = (sni.lower() if sni else ip_dst)
-            # Exact match (es. bing.com) or suffix match (es. www.bing.com)
-            if any(target_to_check == w or target_to_check.endswith("." + w) for w in whitelist):
-                return # If it's whitelisted, we skip all further checks for this packet
+            target_to_check = sni.lower() if sni else ip_dst
+            # Pass the SNI or IP through our cached extractor
+            core_target = get_target_info(target_to_check)
+            # Instant, exact match against the core organization name
+            if core_target in whitelist:
+                return # Whitelisted core domain or IP, skip further checks!
             
         # 2. ALPN (Application-Layer Protocol Negotiation)
         if packet.haslayer(TLS_Ext_ALPN):

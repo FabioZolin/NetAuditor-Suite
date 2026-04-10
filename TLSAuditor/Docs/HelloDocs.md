@@ -39,13 +39,10 @@ Still the tool lets the user get a complete image of the patterns which can then
 
 ## Whitelist Format (whitelist.txt)
 Insert one root domain or IP per line. The algorithm will automatically ignore all of its subdomains as well.
-Root domains with subdomains can also be inserted, but in that case just the specified subdomain will get excluded.
 
 > microsoft.com
 
 > bing.com
-
-> services.google.com
 
 > 192.168.1.254
 

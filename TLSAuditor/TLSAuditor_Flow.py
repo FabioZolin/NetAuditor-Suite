@@ -4,6 +4,11 @@ import os
 import logging
 from collections import deque, Counter
 import math
+import tldextract
+import functools
+
+# Define the global extractor
+extractor = tldextract.TLDExtract()
 
 # --- SCAPY SETUP & LOGGING ---
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
@@ -81,13 +86,32 @@ def print_banner():
 
 # --- ANALYSIS ENGINE ---
 
+@functools.lru_cache(maxsize=10000)
+def get_target_info(target):
+    """
+    Extracts the core organization name from a domain or IP.
+    Caches the result for high performance in streaming PCAPs.
+    """
+    if not target:
+        return ""
+    ext = extractor(target)
+    return ext.domain
+
 def set_whitelist(config):
     whitelist_set = set()
     if config.get('whitelist') and os.path.isfile(config['whitelist']):
         with open(config['whitelist'], 'r', encoding='utf-8') as f:
-            # Save domains in lowercase for case-insensitive matching, and strip whitespace
-            whitelist_set = {line.strip().lower() for line in f if line.strip()}
-        print(f"{C_INFO}[INFO]{C_RESET} {len(whitelist_set)} domains/IPs loaded from whitelist.")
+            for line in f:
+                raw_target = line.strip().lower()
+                
+                # Ignore empty lines and comments
+                if raw_target and not raw_target.startswith('#'):
+                    # Extract the core name (e.g., "microsoft" or "8.8.8.8")
+                    ext = extractor(raw_target)
+                    if ext.domain:
+                        whitelist_set.add(ext.domain)
+                        
+        print(f"{C_INFO}[INFO]{C_RESET} {len(whitelist_set)} core domains/IPs loaded from whitelist.")
     config['whitelist_set'] = whitelist_set
 
 
@@ -119,8 +143,8 @@ def process_packet(packet, stats, config):
 
     whitelist = config.get('whitelist_set')
     if whitelist:
-        # If the IP source or destination is in the whitelist, we skip any further processing for this packet and its session, as it's not relevant for the analysis.
-        if ip_src in whitelist or ip_dst in whitelist:
+        # If the IP source or destination is in the whitelist, skip
+        if get_target_info(ip_src) in whitelist or get_target_info(ip_dst) in whitelist:
             return
 
 
@@ -253,7 +277,7 @@ def process_packet(packet, stats, config):
                             
                         #Checks if SNI is to be ignored, if it has been found
                         if whitelist and session.sni:
-                            if any(session.sni.lower() == w or session.sni.lower().endswith("." + w) for w in whitelist):
+                            if get_target_info(session.sni) in whitelist:
                                 session.ignore = True
                                 return
 
