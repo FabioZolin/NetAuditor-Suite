@@ -73,12 +73,10 @@ Analyze a PCAP for long-lived active sessions and intra-flow payload beaconing:
 Many legitimate processes and services (e.g., Microsoft Updates, Google Telemetry, Apple Push Notifications) use regular TLS communication patterns. **A proper setup of whitelisted IPs and domains specific to the analyzed network is mandatory to prevent false positives.**
 
 Create a simple `whitelist.txt` file containing trusted IPs or SNI root domains (one per line). The algorithm features **Smart Domain Suffix Matching**: inserting a root domain will automatically ignore all of its subdomains as well.
-Lines containing subdomains will make it so the script ignores just the specified subdomain.
 
     # Example whitelist.txt
     microsoft.com
     bing.com
-    services.google.com
     192.168.1.254
 
 Pass it to the scripts using the `-wl` flag. The scripts use set-lookups, dropping trusted traffic instantly and drastically reducing execution time.
