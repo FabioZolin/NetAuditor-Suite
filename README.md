@@ -12,7 +12,7 @@ Currently, the suite includes the following specialized auditors. **Click on eac
 | :--- | :--- | :--- |
 | [**ICMPAuditor**](./ICMPAuditor) | ICMP | Payload asymmetry (RFC 792), Entropy analysis, C2 Beaconing, Covert channels. |
 | [**DNSAuditor**](./DNSAuditor) | DNS | DNS Tunneling, DGA (Domain Generation Algorithms), High-volume TXT/A queries. |
-| [**HTTPSAuditor**](./TLSAuditor) | HTTPS / TLS | Behavioral beaconing (Jitter/Delta time), SNI anomalies, TLS fingerprinting. |
+| [**TLSAuditor**](./TLSAuditor) | TLS | Behavioral beaconing (Jitter/Delta time), SNI anomalies, TLS fingerprinting. |
 
 ## Global Installation
 
@@ -35,9 +35,6 @@ pip install -r requirements.txt
 *(This will install the required core libraries like scapy and colorama for all the tools in the suite).*
 
 ## Current Development
-
-As you can see from the tools status I am currently working on two more advanced projects, `HTTPSAuditor` to get into an up-to-date method of tunneling to and from outside networks. This project will allow me to get a further understanding of behavioural analysis and finding other aspects to monitor apart from the data itself.
-
 Currently thinking about a `SMBAuditor` which will be a detector for SMB lateral movement inside the network, instead of outside tunneling like the other projects.
 
 This project started as just the DNSAuditor to improve my scripting skills and get further into network analysis, let's see where it will end up!
