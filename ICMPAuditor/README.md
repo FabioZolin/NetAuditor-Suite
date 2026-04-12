@@ -25,27 +25,9 @@ Since this tool is part of the **NetAuditor Suite**, it relies on the global req
 > cd ICMPAuditor
 > python ICMPAuditor.py -f capture.pcap
 
-## Usage Examples
+## Usage
 
-**Basic Analysis:**
-Scans the file using default thresholds.
-```bash
-python ICMPAuditor.py -f capture.pcap
-```
-
-**Verbose Mode (Recommended):**
-Displays individual alerts, anomalies, and shows a safe string snippet of the malicious payload.
-```bash
-python ICMPAuditor.py -f capture.pcap -v
-```
-
-**Custom Tuning (For noisy networks):**
-Increases the allowed payload size to 100 bytes, raises the entropy thresholds, and silences unusual ICMP types alerts.
-```bash
-python ICMPAuditor.py -f capture.pcap -s 100 -et 4.5 -dt 3.0 -nt -v
-```
-
-## Command Line Options
+### Command Line Options
 
 | Flag | Long Name | Description | Default |
 | :--- | :--- | :--- | :--- |
@@ -57,6 +39,35 @@ python ICMPAuditor.py -f capture.pcap -s 100 -et 4.5 -dt 3.0 -nt -v
 | `-nt` | `--no_types`| Turns off flagging of IPs using unusual or deprecated ICMP types. | `False` |
 | `-v` | `--verbose` | Enable verbose mode (displays individual alerts and snippets). | `False` |
 | `-vv`| `--very_verbose`| Enable very verbose mode (displays ALL traffic, including normal).| `False` |
+
+### Whitelisting
+Specifing a whitelist can be very helpful to prevent many false positives and noise, the .txt file has to contain one ip per line like this:
+```txt
+192.168.3.1
+85.93.230.98
+8.8.8.8
+```
+
+### Usage Examples
+**Basic Analysis:**
+Scans the file using default thresholds.
+```bash
+python ICMPAuditor.py -f capture.pcap
+```
+
+**Verbose Mode:**
+Displays individual alerts, anomalies, and shows a safe string snippet of the malicious payload.
+```bash
+python ICMPAuditor.py -f capture.pcap -v
+```
+
+**Custom Tuning:**
+Increases the allowed payload size to 100 bytes, raises the entropy thresholds, and silences unusual ICMP types alerts.
+```bash
+python ICMPAuditor.py -f capture.pcap -s 100 -et 4.5 -dt 3.0 -nt -v
+```
+
+---
 
 ### Why Delta Entropy?
 I'd like to add a little explanation on why i chose to use delta entropy instead of the regular one.

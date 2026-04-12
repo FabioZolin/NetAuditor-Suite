@@ -3,7 +3,9 @@ import sys
 import os
 import math
 from collections import Counter
+import itertools
 from scapy.all import PcapReader, ICMP, IP, Raw
+from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest, ICMPv6EchoReply
 
 # --- COLOR AND BANNER SETUP ---
 try:
@@ -25,7 +27,7 @@ def print_banner():
   _____ _____ __  __ _____                 _ _ _             
  |_   _/ ____|  \\/  |  __ \\ /\\            | (_) |            
    | || |    | \\  / | |__) /  \\  _   _  __| |_| |_ ___  _ __ 
-   | || |    | |\\/| |  ___/ /\ \\| | | |/ _` | | __/ _ \| '__|
+   | || |    | |\\/| |  ___/ /\\ \\| | | |/ _` | | __/ _ \\| '__|
   _| || |____| |  | | |  / ____ \\ |_| | (_| | | || (_) | |   
  |_____\\_____|_|  |_|_| /_/    \\_\\__,_|\\__,_|_|\\__\\___/|_|   
                                                              
@@ -56,10 +58,24 @@ class ICMPTracker:
     Class to keep track of pending Echo Requests. 
     The Reply payload must be perfectly identical to the Request payload.
     """
-    def __init__(self):
+    def __init__(self, max_size = 10000, cleanup_chunk=1000):
         # The key will be a tuple: (source_ip, destination_ip, icmp_id, icmp_seq)
         # The value will be the raw payload in bytes.
         self.pending_requests = {}
+        self.max_size = max_size
+        self.cleanup_chunk = cleanup_chunk
+    
+    def add_request(self, key, payload):
+        self.pending_requests[key] = payload
+        # If we hit the high watermark, perform a bulk eviction
+        if len(self.pending_requests) > self.max_size:
+            # itertools.islice efficiently grabs the first N keys without loading the whole dict
+            # In Python 3.7+, dicts maintain insertion order, so these are guaranteed to be the oldest
+            keys_to_delete = list(itertools.islice(self.pending_requests.keys(), self.cleanup_chunk))
+            
+            for k in keys_to_delete:
+                del self.pending_requests[k]
+
 
 # --- ENTROPY CALCULATORS ---
 
@@ -107,17 +123,36 @@ def calculate_delta_entropy(payload_bytes):
         
     return entropy
 
+# --- White List Loading ---
+def load_whitelist(filepath):
+    """Loads IPs from a text file into a fast-lookup set."""
+    whitelist = set()
+    if filepath:
+        if os.path.isfile(filepath):
+            with open(filepath, 'r') as f:
+                for line in f:
+                    ip = line.strip()
+                    # Ignore empty lines and comments
+                    if ip and not ip.startswith('#'):
+                        whitelist.add(ip)
+            print(f"{C_INFO}[INFO]{C_RESET} Loaded {len(whitelist)} IPs into the whitelist.")
+        else:
+            print(f"{C_WARN}[WARNING]{C_RESET} Whitelist file '{filepath}' not found. Proceeding without it.")
+    return whitelist
+
 # --- CORE ROUTING & ANALYSIS ---
 
-def analyze_echo_request(packet, stats, tracker, config):
+def analyze_echo_request(packet, stats, tracker, config, is_ipv6):
     """
     Analyzes outbound ICMP traffic (Type 8).
     Looks for oversized payloads, high entropy (data exfiltration) 
     and updates the tracker for asymmetry verification.
     """
-    ip_src = packet[IP].src
-    ip_dst = packet[IP].dst
-    icmp_layer = packet[ICMP]
+    ip_layer = packet[IPv6] if is_ipv6 else packet[IP]
+    icmp_layer = packet[ICMPv6EchoRequest] if is_ipv6 else packet[ICMP]
+
+    ip_src = ip_layer.src
+    ip_dst = ip_layer.dst
     
     # 1. Volumetric Tracking (Flooding / C2 Beaconing)
     stats.packet_volume_per_ip[ip_src] += 1
@@ -132,7 +167,7 @@ def analyze_echo_request(packet, stats, tracker, config):
     # Note: ID and Seq are used by the OS to match the right response to the right request
     if hasattr(icmp_layer, 'id') and hasattr(icmp_layer, 'seq'):
         tracker_key = (ip_src, ip_dst, icmp_layer.id, icmp_layer.seq)
-        tracker.pending_requests[tracker_key] = payload_bytes
+        tracker.add_request(tracker_key, payload_bytes)
 
     # If there is no payload, there is nothing else to analyze
     if payload_len == 0:
@@ -169,17 +204,19 @@ def analyze_echo_request(packet, stats, tracker, config):
     if is_suspicious:
         stats.suspicious_ips[ip_src] += 1
 
-def analyze_echo_reply(packet, stats, tracker, config):
+def analyze_echo_reply(packet, stats, tracker, config, is_ipv6):
     """
     Analyzes inbound traffic (Type 0).
     Verifies that the payload matches the original Request 
     and checks for anomalous C2 commands.
     """
+    ip_layer = packet[IPv6] if is_ipv6 else packet[IP]
+    icmp_layer = packet[ICMPv6EchoReply] if is_ipv6 else packet[ICMP]
+
     payload_bytes = bytes(packet[Raw].load) if packet.haslayer(Raw) else b''
     payload_len = len(payload_bytes)
-    ip_src = packet[IP].src
-    ip_dst = packet[IP].dst
-    icmp_layer = packet[ICMP]
+    ip_src = ip_layer.src
+    ip_dst = ip_layer.dst
     is_suspicious = False
 
     # 1. Volumetric Tracking (Flooding Inbound)
@@ -237,62 +274,60 @@ def analyze_echo_reply(packet, stats, tracker, config):
         stats.suspicious_ips[ip_src] += 1
 
 def analyze_other_types(packet, stats, config):
-    """
-    Analyzes unusual ICMP types (other than 0 and 8).
-    Also checks the payload of diagnostic types (3, 11) to uncover
-    malware using them as a covert channel to bypass the firewall.
-    """
     ip_src = packet[IP].src
     ip_dst = packet[IP].dst
     icmp_type = packet[ICMP].type
     
-    # Extract the payload (if present)
     payload_bytes = bytes(packet[Raw].load) if packet.haslayer(Raw) else b''
     payload_len = len(payload_bytes)
 
-    # Types considered "normal" for network diagnostics
-    normal_diagnostic_types = [3, 5, 9, 10, 11, 12]
+    # Grouping types by their real-world behavior
+    network_infrastructure_types = [5, 9, 10, 12] # Redirects, Router Discovery, etc.
+    error_quoting_types = [3, 11] # Unreachable, Time Exceeded
+
     stats.other_types += 1
     is_suspicious = False
 
-    # 1. If it's a totally obsolete (e.g., 13, 15) or invented type (e.g., 99) -> DIRECT ALARM
-    if icmp_type not in normal_diagnostic_types and not config['no_types']:
-        is_suspicious = True
-        if config['verbose'] or config['very_verbose']:
-            print(f"{C_ANOMALY}[ANOMALY]{C_RESET} Unusual ICMP Type {icmp_type} detected from {ip_src} to {ip_dst}!")
-            
-    # 2. If it's a diagnostic type (3, 11), the attacker might hide data in it!
-    else:
-        # Check A: Size 
+    # 1. Unknown / Obsolete Types (Direct Alarm)
+    if icmp_type not in network_infrastructure_types and icmp_type not in error_quoting_types:
+        if not config['no_types']:
+            is_suspicious = True
+            if config['verbose'] or config['very_verbose']:
+                print(f"{C_ANOMALY}[ANOMALY]{C_RESET} Unusual ICMP Type {icmp_type} detected from {ip_src} to {ip_dst}!")
+
+    # 2. Error Types (3, 11) - Check for size, but be cautious of entropy
+    elif icmp_type in error_quoting_types:
+        # Check A: Size
         if payload_len > config['payload_size']:
             stats.large_payloads += 1
             is_suspicious = True
             if config['very_verbose']:
-                print(f"{C_WARN}[WARNING]{C_RESET} Large payload in Diagnostic ICMP Type {icmp_type} from {ip_src} to {ip_dst}: {payload_len} bytes")
+                print(f"{C_WARN}[WARNING]{C_RESET} Large payload in ICMP Type {icmp_type} from {ip_src}: {payload_len} bytes")
 
-        # Check B: Entropy (Looking for encrypted data hidden in the fake error message)
+        # Check B: Entropy (Warning: May flag dropped HTTPS/TLS packets!)
         if payload_len > 0:
             shannon_ent = calculate_shannon_entropy(payload_bytes)
             delta_ent = calculate_delta_entropy(payload_bytes)
             
             if shannon_ent >= config['shannon_threshold'] and delta_ent >= config['delta_threshold']:
+                # We don't mark is_suspicious = True here to avoid blacklisting IPs just for dropping TLS packets, 
+                # but we still log it for the analyst to investigate.
                 stats.high_entropy += 1
-                is_suspicious = True
                 if config['verbose'] or config['very_verbose']:
                     safe_payload = repr(payload_bytes[:80])
                     if len(payload_bytes) > 80:
                         safe_payload += " ... [TRUNCATED]"
                         
-                    print(f"{C_CRIT}[CRITICAL EVASION]{C_RESET} High Entropy in Diagnostic ICMP Type {icmp_type} from {ip_src}! (Shannon: {shannon_ent:.2f}, Delta: {delta_ent:.2f})")
+                    print(f"{C_WARN}[NOTICE]{C_RESET} High Entropy in Error ICMP Type {icmp_type} from {ip_src}. (Could be a dropped encrypted packet or hidden C2).")
                     print(f"    -> Payload Snippet: {safe_payload}")
-                    
-    # If the IP generated anomalous traffic, it goes on the blacklist
+
+    # 3. Infrastructure Types (5, 9, 10, 12) - Ignore payloads, they are naturally large/varied
+    else:
+        if config['very_verbose']:
+            print(f"{C_INFO}[INFO]{C_RESET} Legitimate Infrastructure ICMP Type {icmp_type} from {ip_src}.")
+
     if is_suspicious:
         stats.suspicious_ips[ip_src] += 1
-    elif config['very_verbose']:
-        # If everything is regular and the user requested maximum verbosity
-        print(f"{C_INFO}[INFO]{C_RESET} Legitimate Diagnostic ICMP Type {icmp_type} from {ip_src} to {ip_dst}.")
-
 # --- REPORTING ---
 
 def print_analysis_report(stats, config):
@@ -301,23 +336,23 @@ def print_analysis_report(stats, config):
     print("      ICMP TUNNELING & EXFILTRATION REPORT")
     print("="*55)
 
-    print("\n[+] Global Metrics:")
+    print(f"\n{C_INFO}[INFO]{C_RESET} Global Metrics:")
     print(f"    - Total ICMP Packets Analyzed: {stats.total_packets}")
     print(f"    - Large Payloads (> {config['payload_size']} bytes):  {stats.large_payloads}")
     print(f"    - High Entropy (Encrypted/C2): {stats.high_entropy}")
     print(f"    - Asymmetric Payloads (RFC 792): {stats.asymmetric_payloads}")
     print(f"    - Anomalous/Other ICMP Types:  {stats.other_types}")
 
-    print(f"\n[+] Volume Analysis (Threshold: {config['volume_limit']} pkts):")
+    print(f"\n{C_WARN}Volume Analysis{C_RESET} (Threshold: {config['volume_limit']} pkts):")
     # Filter only the IPs that exceeded the volume threshold
     flooders = {ip: count for ip, count in stats.packet_volume_per_ip.items() if count > config['volume_limit']}
     if flooders:
         for ip, count in sorted(flooders.items(), key=lambda x: x[1], reverse=True):
-            print(f"    [!] {ip} sent {count} packets (Possible Beaconing/Flooding)")
+            print(f"{C_WARN}    [*]{C_RESET} {ip} sent {count} packets (Possible Beaconing/Flooding)")
     else:
         print("    - No IPs exceeded the volume threshold.")
 
-    print(f"\n[+] Suspicious Hosts (Payload / Entropy / Anomalies):")
+    print(f"\n{C_CRIT} Suspicious Hosts {C_RESET}(Payload / Entropy / Anomalies):")
     if stats.suspicious_ips:
         # Show the top 10 most malicious IPs
         for ip, count in stats.suspicious_ips.most_common(10):
@@ -325,10 +360,10 @@ def print_analysis_report(stats, config):
     else:
         print("    - No suspicious payload activity detected.")
 
-    print(f"\n[+] Asymmetric Payload Offenders (Definite C2):")
+    print(f"\n{C_CRIT} [CRITICAL]{C_RESET} Asymmetric Payload Offenders (Definite C2):")
     if stats.asymmetric_ips:
         for ip, count in stats.asymmetric_ips.most_common():
-            print(f"    - {ip}: involved in {count} asymmetric exchanges")
+            print(f"{C_CRIT}    [!]{C_RESET} {ip}: involved in {count} asymmetric exchanges")
     else:
         print("    - No asymmetric payloads detected.")
 
@@ -339,27 +374,40 @@ def process_icmp_packet(packet, stats, tracker, config):
     """
     Core engine (The Router): verifies the packet is ICMP and sends it to the right analysis function.
     """
+    is_ipv4 = packet.haslayer(IP) and packet.haslayer(ICMP)
+    is_ipv6_req = packet.haslayer(IPv6) and packet.haslayer(ICMPv6EchoRequest)
+    is_ipv6_rep = packet.haslayer(IPv6) and packet.haslayer(ICMPv6EchoReply)
+
     # 1. Security Tollbooth: if there is no IP or ICMP layer, discard the packet immediately.
-    if not (packet.haslayer(ICMP) and packet.haslayer(IP)):
+    if not (is_ipv4 or is_ipv6_req or is_ipv6_rep):
+        # Note: If you want to analyze "other" IPv6 types, you'd add them here
         return
 
-    # Add a packet to the global counter
+    
+    
+    #Whitelist check 
+    ip_layer = packet[IP] if is_ipv4 else packet[IPv6]
+    if ip_layer.src in config['whitelist'] or ip_layer.dst in config['whitelist']:
+        return
+    
+    # Add a packet to the global counter if not from whitelisted ip
     stats.total_packets += 1
     
-    # 2. Extract the ICMP type
-    icmp_type = packet[ICMP].type
-    
-    # Type 8: Echo Request (Outbound traffic)
-    if icmp_type == 8:
-        analyze_echo_request(packet, stats, tracker, config)
+    # 2. Extract the ICMP type and send to the correct function
+    if is_ipv4:
+        icmp_type = packet[ICMP].type
+        if icmp_type == 8:
+            analyze_echo_request(packet, stats, tracker, config, is_ipv6=False)
+        elif icmp_type == 0:
+            analyze_echo_reply(packet, stats, tracker, config, is_ipv6=False)
+        else:
+            analyze_other_types(packet, stats, config)
+            
+    elif is_ipv6_req:
+        analyze_echo_request(packet, stats, tracker, config, is_ipv6=True)
         
-    # Type 0: Echo Reply (Inbound traffic back to our network)
-    elif icmp_type == 0:
-        analyze_echo_reply(packet, stats, tracker, config)
-        
-    # Other types (Destination Unreachable, Time Exceeded, or custom types used by malware)
-    else:
-        analyze_other_types(packet, stats, config)
+    elif is_ipv6_rep:
+        analyze_echo_reply(packet, stats, tracker, config, is_ipv6=True)
 
 
 # --- ORCHESTRATOR ---
@@ -377,9 +425,9 @@ def analyze_pcap(pcap_file, config):
     stats = ICMPStats()
     tracker = ICMPTracker()
     
-    # PCAP reading
-    packet_counter = 0  # Global counter for the UI
     
+    packet_counter = 0  # Global counter
+    # PCAP reading
     with PcapReader(pcap_file) as packets:
         for packet in packets:
             packet_counter += 1
@@ -412,8 +460,10 @@ def main():
     parser.add_argument("-vl", "--volume", help="Max number of ICMP packets per IP before flagging flooding/beaconing (default: 1000)", type=int, default=1000)
     parser.add_argument("-nt", "--no_types", help="Turns off flagging of IPs using unusual or deprecated ICMP types, still checks the contents for malicious payloads", action="store_true")
     # Verbosity levels
-    parser.add_argument("-v", "--verbose", help="Enable verbose mode (displays individual alerts)", action="store_true")
-    parser.add_argument("-vv", "--very_verbose", help="Enable very verbose mode (displays all warnings and standard pings)", action="store_true")
+    parser.add_argument("-v", "--verbose", help="Enable verbose mode, displays individual alerts", action="store_true")
+    parser.add_argument("-vv", "--very_verbose", help="Enable very verbose mode, displays all warnings and standard pings", action="store_true")
+    # Whitelist
+    parser.add_argument("-wl", "--whitelist", help="Path to .txt file containing whitelisted ip addresses, one per line.", type = str)
     
     args = parser.parse_args()
     
@@ -425,6 +475,7 @@ def main():
         'delta_threshold': args.delta,
         'volume_limit': args.volume,
         'no_types' : args.no_types,
+        'whitelist' : load_whitelist(args.whitelist),
         'verbose': True if args.very_verbose else args.verbose,
         'very_verbose': args.very_verbose
     }
