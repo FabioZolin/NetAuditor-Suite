@@ -232,6 +232,7 @@ def process_dns_queries(packet, query_stats, config):
         current_query = packet[DNS].qd
         is_exfil = False
         is_c2 = False
+        is_tracked_domain = False
         # Traverse the linked list of queries using a while loop
         # Protects against malformed 'qdcount' headers and handles multiple queries
         while current_query:
@@ -263,7 +264,9 @@ def process_dns_queries(packet, query_stats, config):
             # Check 1: Length
             if len(looked_up_domain) > config['domain_length']:
                 query_stats.long_queries += 1
-                track_suspicious_domain()
+                if not is_tracked_domain:
+                    track_suspicious_domain()
+                    is_tracked_domain = True
                 if config['very_verbose']:
                     print(f"[{YELLOW}WARNING{RESET}] Long Query from {src_ip}: {looked_up_domain} ({len(looked_up_domain)} chars)")
 
@@ -272,7 +275,9 @@ def process_dns_queries(packet, query_stats, config):
             
             if is_suspicious_entropy:
                 query_stats.high_entropy += 1
-                track_suspicious_domain()
+                if not is_tracked_domain:
+                    track_suspicious_domain()
+                    is_tracked_domain = True
                 if not is_exfil:
                     query_stats.exfil_ips[src_ip] += 1
                     is_exfil = True
@@ -296,7 +301,9 @@ def process_dns_queries(packet, query_stats, config):
 
             elif qtype == 10: # NULL
                 query_stats.null += 1
-                track_suspicious_domain()
+                if not is_tracked_domain:
+                    track_suspicious_domain()
+                    is_tracked_domain = True
                 if not is_exfil:
                     query_stats.exfil_ips[src_ip] += 1
                     is_exfil = True
@@ -314,14 +321,13 @@ def process_dns_queries(packet, query_stats, config):
             if not isinstance(current_query, DNSQR):
                 break
 
-    except (IndexError, AttributeError):
+    except (IndexError, AttributeError, TypeError):
         pass
 
 def process_dns_responses(packet, response_stats, config):
     """Analyzes DNSRR records to find possible C2 traffic."""
     if not packet.haslayer(DNS) or packet[DNS].qr != 1: 
         return
-        
     try:
         if packet.haslayer(IP):
             dst_ip = packet[IP].dst
@@ -330,62 +336,61 @@ def process_dns_responses(packet, response_stats, config):
         else:
             return # No IP layer found
 
-# Iterate through Answer (an), Authority (ns), and Additional (ar) sections
+        # Iterate through Answer (an), Authority (ns), and Additional (ar) sections
         for dns_section in [packet[DNS].an, packet[DNS].ns, packet[DNS].ar]:
-            current_answer = dns_section
+            
+            # If the section is empty, it will be set to None, so we skip it.
+            if not dns_section:
+                continue
 
             # Safer check: ensures we are actually looking at a DNS Resource Record
-            while isinstance(current_answer, DNSRR):
-                record_type = current_answer.type
-                response_stats.total_responses += 1
-                
-                # We wrap the decoding in a try/except just in case a malformed 
-                # stealth record is missing the rrname attribute
-                try:
-                    domain = current_answer.rrname.decode('utf-8', errors='replace').rstrip('.').lower()
-                except AttributeError:
-                    current_answer = current_answer.payload
-                    continue
+            for current_answer in dns_section:
+                if isinstance(current_answer, DNSRR):
+                    record_type = current_answer.type
+                    response_stats.total_responses += 1
 
-                # --- THE MASTER CACHE ---
-                domain_data = get_domain_info(domain)
+                    # We wrap the decoding in a try/except just in case a malformed 
+                    # stealth record is missing the rrname attribute
+                    try:
+                        domain = current_answer.rrname.decode('utf-8', errors='replace').rstrip('.').lower()
+                    except AttributeError:
+                        continue
 
-                # --- TLD-AWARE WHITELIST CHECK ---
-                if config['whitelist'] and domain_data['org_name'] in config['whitelist']:
-                    current_answer = current_answer.payload
-                    continue 
+                    # --- THE MASTER CACHE ---
+                    domain_data = get_domain_info(domain)
 
-                payload = current_answer.rdata
-                    
-                # --- TXT Records (Type 16) ---
-                if record_type == 16:
-                    response_stats.txt_responses += 1
-                    
-                    # Applying the decoding bug fix mentioned earlier!
-                    if isinstance(payload, list):
-                        payload_text = "".join([b.decode('utf-8', errors='ignore') if isinstance(b, bytes) else str(b) for b in payload])
-                    elif isinstance(payload, bytes):
-                        payload_text = payload.decode('utf-8', errors='ignore')
-                    else:
-                        payload_text = str(payload)
-                    
-                    is_suspicious_entropy, txt_entropy = analyze_entropy_smart(payload_text, config)
-                    if is_suspicious_entropy:
-                        if config['verbose'] or config['show_txt']:
-                            print(f"[{RED}CRITICAL C2 PAYLOAD{RESET}] High Entropy TXT Response({txt_entropy:.2f}) from {domain} to {dst_ip}: \nPayload: {payload_text}")
+                    # --- TLD-AWARE WHITELIST CHECK ---
+                    if config['whitelist'] and domain_data['org_name'] in config['whitelist']:
+                        continue 
+
+                    payload = current_answer.rdata
+
+                    # --- TXT Records (Type 16) ---
+                    if record_type == 16:
+                        response_stats.txt_responses += 1
+
+                        if isinstance(payload, list):
+                            payload_text = "".join([b.decode('utf-8', errors='ignore') if isinstance(b, bytes) else str(b) for b in payload])
+                        elif isinstance(payload, bytes):
+                            payload_text = payload.decode('utf-8', errors='ignore')
+                        else:
+                            payload_text = str(payload)
+
+                        is_suspicious_entropy, txt_entropy = analyze_entropy_smart(payload_text, config)
+                        if is_suspicious_entropy:
+                            if config['verbose'] or config['show_txt']:
+                                print(f"[{RED}CRITICAL C2 PAYLOAD{RESET}] High Entropy TXT Response({txt_entropy:.2f}) from {domain} to {dst_ip}: \nPayload: {payload_text}")
+                            response_stats.suspicious_dst_ips[dst_ip] += 1
+
+                    # --- NULL Records (Type 10) ---
+                    elif record_type == 10:
+                        response_stats.null_responses += 1
+                        payload_length = len(payload) if payload else 0
+
+                        if config['verbose'] or config['show_null']:
+                            print(f"[{RED}CRITICAL C2{RESET}] NULL Response from {domain} to {dst_ip}! \nInbound binary payload: {payload_length} bytes")
                         response_stats.suspicious_dst_ips[dst_ip] += 1
 
-                # --- NULL Records (Type 10) ---
-                elif record_type == 10:
-                    response_stats.null_responses += 1
-                    payload_length = len(payload) if payload else 0
-                    
-                    if config['verbose'] or config['show_null']:
-                        print(f"[{RED}CRITICAL C2{RESET}] NULL Response from {domain} to {dst_ip}! \nInbound binary payload: {payload_length} bytes")
-                    response_stats.suspicious_dst_ips[dst_ip] += 1
-                    
-                # --- MOVE TO THE NEXT LAYER ---
-                current_answer = current_answer.payload
     except (IndexError, AttributeError):
         pass
 
