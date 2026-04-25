@@ -4,15 +4,17 @@
 
 The NetAuditor Suite provides specialized, memory-efficient scripts to analyze network captures (`.pcap`) protocol by protocol. These tools use Scapy and Pyshark libraries to parse thousands of packets of traffic, apply statistical models, and highlight anomalous behaviors typical of advanced persistent threats (APTs) and modern malware.
 
+Where possible the scripts perform DPI in search of Indicators of Compromise, such as high entropy DNS queries, asymmetric PING payloads and domains generated via Domain Generation Algorithms.
+
 ## The Toolkit
 
 Currently, the suite includes the following specialized auditors. **Click on each tool's name to read its specific documentation and usage guide.**
 
-| Tool | Target Protocol | Key Detection Capabilities |
+| Tool | Target Protocol | Detection Capabilities |
 | :--- | :--- | :--- |
-| [**TLSAuditor**](./TLSAuditor) | TLS | Behavioral Analysis, SNI anomalies, TLS Light fingerprinting. |
-| [**DNSAuditor**](./DNSAuditor) | DNS | DNS C2 and Data exfiltration, High-volume TXT/NULL queries, High entropy queries. |
-| [**ICMPAuditor**](./ICMPAuditor) | ICMP | Payload asymmetry (RFC 792), Payload entropy analysis, C2 Beaconing, Covert channels. |
+| [**TLSAuditor**](./TLSAuditor) | TLS | C2 Beaconing, SNI anomalies, TLS Light fingerprinting. |
+| [**DNSAuditor**](./DNSAuditor) | DNS | C2 Beaconing and Data exfiltration, High-volume TXT/NULL queries, High entropy queries. |
+| [**ICMPAuditor**](./ICMPAuditor) | ICMP | C2 Beaconing and Data exfiltration, Payload entropy analysis, Deprecated/not existing message type usage. |
 
 ## Global Installation
 
@@ -37,6 +39,4 @@ pip install -r requirements.txt
 ---
 
 ### Current Development
-Currently thinking about a `SMBAuditor` which will be a detector for SMB lateral movement inside the network, instead of outside tunneling like the other projects.
-
-This project started as just the DNSAuditor to improve my scripting skills and get further into network analysis, let's see where it will end up!
+Currently being submitted as an extracurricular project for the university course "Reti di Calcolatori" (Computer Networks)
